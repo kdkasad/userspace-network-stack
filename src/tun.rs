@@ -1,7 +1,10 @@
 //! Utilities for dealing with TUN devices
 
 use std::{
-    ffi::{CStr, CString}, fs::{File, OpenOptions}, io::{Read, Write}, os::fd::AsRawFd
+    ffi::{CStr, CString},
+    fs::{File, OpenOptions},
+    ops::{Deref, DerefMut},
+    os::fd::AsRawFd,
 };
 
 /// Represents a TUN device
@@ -33,19 +36,18 @@ impl TunDevice {
     }
 }
 
-impl Read for TunDevice {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.file.read(buf)
+/// Allow dereferencing a [`TunDevice`] into a [`File`]
+impl Deref for TunDevice {
+    type Target = File;
+    fn deref(&self) -> &Self::Target {
+        &self.file
     }
 }
 
-impl Write for TunDevice {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.file.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file.flush()
+/// Allow dereferencing a [`TunDevice`] into a [`File`]
+impl DerefMut for TunDevice {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.file
     }
 }
 
@@ -53,7 +55,7 @@ impl Write for TunDevice {
 ///
 /// The `fd` argument must be a file descriptor referring to `/dev/net/tun`.
 fn ioctl_create_tun(fd: i32) -> std::io::Result<CString> {
-    use libc::{IFF_TUN, TUNSETIFF, __c_anonymous_ifr_ifru, c_short, ifreq, ioctl};
+    use libc::{__c_anonymous_ifr_ifru, IFF_TUN, TUNSETIFF, c_short, ifreq, ioctl};
 
     const NAME_TEMPLATE: &[u8; 5] = b"tun%d";
 
