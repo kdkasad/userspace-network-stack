@@ -4,7 +4,7 @@ use unet::tun::TunDevice;
 
 pub fn main() -> ExitCode {
     // Attempt to create a new TUN device
-    let tundev = match TunDevice::new() {
+    let tundev = match TunDevice::create(None) {
         Ok(dev) => dev,
         Err(err) => {
             eprintln!("Failed to create TUN device: {}", err);
