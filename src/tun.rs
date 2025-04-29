@@ -7,6 +7,8 @@ use std::{
     os::fd::AsRawFd,
 };
 
+use zerocopy::IntoBytes;
+
 /// Represents a TUN device
 pub struct TunDevice {
     file: File,
@@ -80,9 +82,13 @@ fn ioctl_create_tun(
     name_template: Option<&str>,
     exclusive: bool,
 ) -> std::io::Result<CString> {
-    use libc::{__c_anonymous_ifr_ifru, IFF_TUN, IFF_TUN_EXCL, TUNSETIFF, c_short, ifreq, ioctl};
+    use libc::{
+        __c_anonymous_ifr_ifru, IFF_TUN, IFF_TUN_EXCL, TUNSETIFF, c_short, c_ushort, ifreq, ioctl,
+    };
 
-    let flags = c_short::try_from(IFF_TUN | if exclusive { IFF_TUN_EXCL } else { 0 }).unwrap();
+    #[allow(clippy::cast_possible_wrap)]
+    let flags =
+        c_ushort::try_from(IFF_TUN | if exclusive { IFF_TUN_EXCL } else { 0 }).unwrap() as c_short;
     let mut ifreq = ifreq {
         ifr_name: [0; 16],
         ifr_ifru: __c_anonymous_ifr_ifru { ifru_flags: flags },
@@ -108,8 +114,8 @@ fn ioctl_create_tun(
     };
     if result == 0 {
         #[allow(clippy::cast_sign_loss)]
-        let name = ifreq.ifr_name.map(|c| c as u8);
-        Ok(CStr::from_bytes_until_nul(&name)
+        let returned_name_buf = ifreq.ifr_name.as_bytes();
+        Ok(CStr::from_bytes_until_nul(returned_name_buf)
             .expect("Returned interface name is not null-terminated")
             .to_owned())
     } else {
