@@ -1,17 +1,16 @@
 //! Utilities for dealing with TUN devices
 
 use std::{
-    ffi::CStr,
-    fs::{File, OpenOptions},
-    ops::{Deref, DerefMut},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    ffi::CStr, fmt::Display, fs::{File, OpenOptions}, ops::{Deref, DerefMut}, os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}
 };
 
+use bitflags::bitflags;
+use ethertype::EtherType;
 use libc::{
     __c_anonymous_ifr_ifru, AF_INET, IFF_TUN, IFF_TUN_EXCL, IFF_UP, Ioctl, SIOCGIFFLAGS,
     SIOCSIFFLAGS, SOCK_DGRAM, TUNSETIFF, c_short, c_ushort, ifreq, ioctl, socket,
 };
-use zerocopy::IntoBytes;
+use zerocopy::{network_endian, FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
 /// Represents a TUN device
 pub struct TunDevice {
@@ -142,6 +141,7 @@ fn ifreq_ioctl(
     }
 }
 
+/// Trait to provide operations for network interfaces.
 pub trait NetworkInterface: AsRawFd {
     /// Returns the name of the interface.
     #[must_use]
@@ -181,4 +181,31 @@ pub trait NetworkInterface: AsRawFd {
         }
         Ok(())
     }
+}
+
+/// Type for dealing with TUN packet flags.
+#[repr(transparent)]
+#[derive(KnownLayout, Immutable, FromBytes, Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TunPacketFlags(u16);
+
+bitflags! {
+    /// Flags set on each packet read from the TUN interface (when `TUN_NO_PI` is not set).
+    impl TunPacketFlags: u16 {
+        /// The complete packet did not fit in the buffer and will be striped across multiple reads.
+        const TUN_PKT_STRIP = 1 << 0;
+    }
+}
+
+impl Display for TunPacketFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+
+/// Metadata added to packets read from the TUN device.
+#[repr(C, packed)]
+#[derive(KnownLayout, Immutable, FromBytes, Copy, Clone, Debug, PartialEq, Eq, Unaligned)]
+pub struct TunPacketMetadata {
+    pub flags: TunPacketFlags,
+    pub protocol: network_endian::U16,
 }
