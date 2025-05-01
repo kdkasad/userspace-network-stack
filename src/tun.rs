@@ -1,16 +1,21 @@
 //! Utilities for dealing with TUN devices
 
 use std::{
-    ffi::CStr, fmt::Display, fs::{File, OpenOptions}, ops::{Deref, DerefMut}, os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}
+    ffi::CStr,
+    fmt::Display,
+    fs::{File, OpenOptions},
+    net::Ipv4Addr,
+    ops::{Deref, DerefMut},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
 };
 
 use bitflags::bitflags;
-use ethertype::EtherType;
 use libc::{
-    __c_anonymous_ifr_ifru, AF_INET, IFF_TUN, IFF_TUN_EXCL, IFF_UP, Ioctl, SIOCGIFFLAGS,
-    SIOCSIFFLAGS, SOCK_DGRAM, TUNSETIFF, c_short, c_ushort, ifreq, ioctl, socket,
+    __c_anonymous_ifr_ifru, AF_INET, IFF_POINTOPOINT, IFF_TUN, IFF_TUN_EXCL, IFF_UP, Ioctl,
+    SIOCGIFFLAGS, SIOCSIFADDR, SIOCSIFDSTADDR, SIOCSIFFLAGS, SOCK_DGRAM, TUNSETIFF, c_short,
+    c_ushort, ifreq, in_addr, ioctl, sockaddr, sockaddr_in, socket,
 };
-use zerocopy::{network_endian, FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, network_endian};
 
 /// Represents a TUN device
 pub struct TunDevice {
@@ -47,9 +52,17 @@ impl TunDevice {
             .read(true)
             .write(true)
             .open("/dev/net/tun")?;
-        let flags = u16::try_from(IFF_TUN | IFF_TUN_EXCL).unwrap();
-        let (ifname, _flags) =
-            ifreq_ioctl(file.as_raw_fd(), name_template, TUNSETIFF, Some(flags))?;
+        #[allow(clippy::cast_possible_wrap)]
+        let flags = u16::try_from(IFF_TUN | IFF_TUN_EXCL).unwrap() as c_short;
+        let ifname = unsafe {
+            ioctl_ifreq(
+                file.as_raw_fd(),
+                name_template,
+                TUNSETIFF,
+                Some(__c_anonymous_ifr_ifru { ifru_flags: flags }),
+            )?
+            .0
+        };
         Ok(Self { file, name: ifname })
     }
 }
@@ -84,27 +97,28 @@ impl DerefMut for TunDevice {
 }
 
 /// Performs an `ioctl(2)` used to configure a network interface, specifically one which takes
-/// a `struct ifreq` pointer as the argument and makes use of the `ifr_name` and `ifr_flags`
-/// fields.
+/// a `struct ifreq` pointer as the argument.
 ///
-/// Returns the post-ioctl name and flags of the `struct ifreq`, as some ioctls modify those.
-/// See `netdevice(7)`.
+/// Returns the post-ioctl name and `ifr_ifru` field of the `struct ifreq`.
+///
+/// # Safety
+///
+/// The correct field of the `data` union for the given `request` must be set.
+/// Setting the wrong field for a given request is undefined behavior.
 ///
 /// # Panics
 ///
 /// This function panics if `name` has a value which is longer than 15 bytes.
-fn ifreq_ioctl(
+unsafe fn ioctl_ifreq(
     fd: RawFd,
     name: Option<&str>,
     request: Ioctl,
-    flags: Option<c_ushort>,
-) -> std::io::Result<(String, u16)> {
+    data: Option<__c_anonymous_ifr_ifru>,
+) -> std::io::Result<(String, __c_anonymous_ifr_ifru)> {
     #[allow(clippy::cast_possible_wrap)]
     let mut ifreq = ifreq {
         ifr_name: [0; 16],
-        ifr_ifru: __c_anonymous_ifr_ifru {
-            ifru_flags: flags.unwrap_or(0) as c_short,
-        },
+        ifr_ifru: data.unwrap_or(__c_anonymous_ifr_ifru { ifru_flags: 0 }),
     };
 
     if let Some(name_str) = name {
@@ -133,12 +147,96 @@ fn ifreq_ioctl(
             .to_str()
             .expect("Returned interface name is not valid UTF-8")
             .to_owned();
-        let flags = unsafe { ifreq.ifr_ifru.ifru_flags };
-        #[allow(clippy::cast_sign_loss)]
-        Ok((name, flags as c_ushort))
+        Ok((name, ifreq.ifr_ifru))
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+/// Set or clear the given `flag` on the given interface.
+///
+/// This function gets the current flag word using the `SIOCGIFFLAGS` ioctl, then either sets or
+/// clears the given `flag` depending on the value of `set`, then sets the new flag word using the
+/// `SIOCSIFFLAGS` ioctl.
+fn ioctl_ifreq_set_flag(name: &str, flag: u16, set: bool) -> std::io::Result<()> {
+    // Open a socket to perform the ioctl on
+    let socket = unsafe {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        OwnedFd::from_raw_fd(fd)
+    };
+    // Get current interface flags
+    #[allow(clippy::cast_sign_loss)]
+    let old_flags = unsafe {
+        let (_name, data) = ioctl_ifreq(socket.as_raw_fd(), Some(name), SIOCGIFFLAGS, None)?;
+        data.ifru_flags
+    } as u16;
+    // Modify and set new flags
+    let new_flags = if set {
+        old_flags | flag
+    } else {
+        old_flags & !flag
+    };
+    if old_flags != new_flags {
+        unsafe {
+            ioctl_ifreq(
+                socket.as_raw_fd(),
+                Some(name),
+                SIOCSIFFLAGS,
+                Some(__c_anonymous_ifr_ifru {
+                    #[allow(clippy::cast_possible_wrap)]
+                    ifru_flags: new_flags as i16,
+                }),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum SetAddrType {
+    Local,
+    P2pDest,
+}
+
+fn ioctl_ifreq_set_addr(name: &str, addr_type: SetAddrType, addr: Ipv4Addr) -> std::io::Result<()> {
+    // Open a socket to perform the ioctl on
+    let socket = unsafe {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        OwnedFd::from_raw_fd(fd)
+    };
+    // Create sockaddr representing given IPv4 address
+    let sockaddr: sockaddr = unsafe {
+        std::mem::transmute(sockaddr_in {
+            sin_family: c_ushort::try_from(AF_INET).unwrap(),
+            sin_port: 0,
+            sin_addr: in_addr {
+                s_addr: addr.to_bits().swap_bytes(),
+            },
+            sin_zero: [0; 8],
+        })
+    };
+    let (request, data) = match addr_type {
+        SetAddrType::Local => (
+            SIOCSIFADDR,
+            __c_anonymous_ifr_ifru {
+                ifru_addr: sockaddr,
+            },
+        ),
+        SetAddrType::P2pDest => (
+            SIOCSIFDSTADDR,
+            __c_anonymous_ifr_ifru {
+                ifru_dstaddr: sockaddr,
+            },
+        ),
+    };
+    unsafe { ioctl_ifreq(socket.as_raw_fd(), Some(name), request, Some(data))? };
+    Ok(())
 }
 
 /// Trait to provide operations for network interfaces.
@@ -153,33 +251,34 @@ pub trait NetworkInterface: AsRawFd {
     ///
     /// Returns an `Err` if getting the current state or setting the new state fail.
     fn set_running(&mut self, up: bool) -> std::io::Result<()> {
-        // Open a socket to perform the ioctl on
-        let socket = unsafe {
-            let fd = socket(AF_INET, SOCK_DGRAM, 0);
-            if fd < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            OwnedFd::from_raw_fd(fd)
-        };
-        // Get current interface flags
-        let (_name, old_flags) =
-            ifreq_ioctl(socket.as_raw_fd(), Some(self.name()), SIOCGIFFLAGS, None)?;
-        // Modify and set new flags
-        let iff_up = c_ushort::try_from(IFF_UP).unwrap();
-        let new_flags = if up {
-            old_flags | iff_up
-        } else {
-            old_flags & !iff_up
-        };
-        if old_flags != new_flags {
-            ifreq_ioctl(
-                socket.as_raw_fd(),
-                Some(self.name()),
-                SIOCSIFFLAGS,
-                Some(new_flags),
-            )?;
-        }
-        Ok(())
+        ioctl_ifreq_set_flag(self.name(), u16::try_from(IFF_UP).unwrap(), up)
+    }
+
+    /// Sets the point-to-point flag on this interface (`IFF_POINTTOPOINT`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Err` if getting the current state or setting the new state fail.
+    fn set_p2p(&mut self, p2p: bool) -> std::io::Result<()> {
+        ioctl_ifreq_set_flag(self.name(), u16::try_from(IFF_POINTOPOINT).unwrap(), p2p)
+    }
+
+    /// Set this machine's IPv4 address on the interface.
+    ///
+    /// # Errors
+    ///
+    /// Retunrns an `Err` if the operation fails.
+    fn set_address(&mut self, addr: Ipv4Addr) -> std::io::Result<()> {
+        ioctl_ifreq_set_addr(self.name(), SetAddrType::Local, addr)
+    }
+
+    /// Set the destination address of a peer-to-peer device.
+    ///
+    /// # Errors
+    ///
+    /// Retunrns an `Err` if the operation fails.
+    fn set_p2p_dst_address(&mut self, addr: Ipv4Addr) -> std::io::Result<()> {
+        ioctl_ifreq_set_addr(self.name(), SetAddrType::P2pDest, addr)
     }
 }
 
