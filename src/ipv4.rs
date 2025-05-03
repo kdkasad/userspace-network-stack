@@ -448,7 +448,7 @@ mod tests {
     use std::iter::zip;
 
     use bytes::Bytes;
-    use zerocopy::FromZeros;
+    use zerocopy::{FromBytes, FromZeros};
 
     use crate::ipv4::IPV4_HEADER_SIZE;
 
@@ -485,6 +485,27 @@ mod tests {
             fragments.push(fragment);
         }
         test_reassemble_fragments(&fragments);
+    }
+
+    /// Reassembles a packet sent using `ping -c 1 10.0.0.2`.
+    #[test]
+    fn reassemble_ping() {
+        let dump_frag_1 = "
+            0x0000:  4500 004c 41b6 2000 4001 04f9 0a00 0001
+            0x0010:  0a00 0002 0800 75df 137e 0001 ba8a 1668
+            0x0020:  0000 0000 d6db 0800 0000 0000 1011 1213
+            0x0030:  1415 1617 1819 1a1b 1c1d 1e1f 2021 2223
+            0x0040:  2425 2627 2829 2a2b 2c2d 2e2f
+        ";
+        let dump_frag_2 = "
+            0x0000:  4500 001c 41b6 0007 4001 2522 0a00 0001
+            0x0010:  0a00 0002 3031 3233 3435 3637
+        ";
+        let frags = [
+            bytes_from_tcpdump(dump_frag_1),
+            bytes_from_tcpdump(dump_frag_2),
+        ];
+        test_reassemble_fragments(&frags);
     }
 
     /// Creates packets from the given fragments, gives them to the reassembler, and ensures the
@@ -530,5 +551,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Parses the output of `tcpdump(1)` with the `-xx` flag into a byte buffer.
+    ///
+    /// Panics if parsing fails.
+    fn bytes_from_tcpdump(dump: &str) -> (Ipv4Header, Bytes) {
+        let mut buf: Vec<u8> = Vec::new();
+        for line in dump.lines() {
+            let (_addr, hex) = line.split_once(":  ").unwrap();
+            for word in hex.trim().split(' ') {
+                let word_val = u16::from_str_radix(word, 16).unwrap();
+                buf.extend_from_slice(&word_val.to_be_bytes());
+            }
+        }
+        for chunk in buf.chunks(16) {
+            for byte in chunk {
+                print!("{byte:02x}");
+            }
+            println!();
+        }
+        let header = Ipv4Header::read_from_bytes(&buf[0..IPV4_HEADER_SIZE]).unwrap();
+        let payload = Bytes::from_owner(buf).slice(IPV4_HEADER_SIZE..);
+        (header, payload)
     }
 }
