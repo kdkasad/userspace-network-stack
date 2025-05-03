@@ -1,9 +1,10 @@
-use std::{io::Read, net::Ipv4Addr};
+use std::net::Ipv4Addr;
 
 use bytes::{Bytes, BytesMut};
 use unet::{
     ipv4::{Ipv4Header, Ipv4Reassembler, Ipv4TransportProtocol},
     tun::{NetworkInterface, TunDevice, TunPacketMetadata},
+    util::extend_from_reader,
 };
 use zerocopy::TryFromBytes;
 
@@ -20,9 +21,7 @@ pub fn main() {
     loop {
         // Read packet into a byte buffer
         let mut buf = BytesMut::with_capacity(4096);
-        buf.resize(4096, 0); // Inefficient but oh well...
-        let n_read = tun.read(buf.as_mut()).expect("Failed to read from device");
-        buf.truncate(n_read);
+        let n_read = extend_from_reader(&mut buf, &mut *tun).expect("Failed to read from device");
         let buf = buf.freeze();
 
         let (metadata, packet_bytes) = TunPacketMetadata::try_read_from_prefix(&buf)
