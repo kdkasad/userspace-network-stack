@@ -21,7 +21,7 @@ pub fn main() {
     loop {
         // Read packet into a byte buffer
         let mut buf = BytesMut::with_capacity(4096);
-        let n_read = extend_from_reader(&mut buf, &mut *tun).expect("Failed to read from device");
+        let n_read = extend_from_reader(&mut buf, &mut tun.file).expect("Failed to read from device");
         let buf = buf.freeze();
 
         let (metadata, packet_bytes) = TunPacketMetadata::try_read_from_prefix(&buf)

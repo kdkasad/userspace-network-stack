@@ -5,7 +5,6 @@ use std::{
     fmt::Display,
     fs::{File, OpenOptions},
     net::Ipv4Addr,
-    ops::{Deref, DerefMut},
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
 };
 
@@ -19,7 +18,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, network_
 
 /// Represents a TUN device
 pub struct TunDevice {
-    file: File,
+    pub file: File,
     name: String,
 }
 
@@ -78,21 +77,6 @@ impl NetworkInterface for TunDevice {
 impl AsRawFd for TunDevice {
     fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
         self.file.as_raw_fd()
-    }
-}
-
-/// Support dereferencing a [`TunDevice`] into a [`File`]
-impl Deref for TunDevice {
-    type Target = File;
-    fn deref(&self) -> &Self::Target {
-        &self.file
-    }
-}
-
-/// Support dereferencing a [`TunDevice`] into a [`File`]
-impl DerefMut for TunDevice {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.file
     }
 }
 

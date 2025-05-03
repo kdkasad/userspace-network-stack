@@ -18,7 +18,7 @@ pub fn main() {
 
     loop {
         let mut buf = [0u8; 4096];
-        let n_read = tun.read(&mut buf).expect("Failed to read from device");
+        let n_read = tun.file.read(&mut buf).expect("Failed to read from device");
         let (metadata, packet_bytes) = TunPacketMetadata::try_ref_from_prefix(&buf[0..n_read])
             .expect("Packet buffer not convertible into TunPacketMetadata");
         println!("Read {n_read} bytes (4 metadata + {} packet)", n_read - 4);
