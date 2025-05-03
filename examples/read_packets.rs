@@ -1,7 +1,10 @@
 use std::{io::Read, net::Ipv4Addr};
 
 use ethertype::EtherType;
-use unet::{ipv4::{Ipv4Header, Ipv4TransportProtocol}, tun::{NetworkInterface, TunDevice, TunPacketMetadata}};
+use unet::{
+    ipv4::{Ipv4Header, Ipv4TransportProtocol},
+    tun::{NetworkInterface, TunDevice, TunPacketMetadata},
+};
 use zerocopy::TryFromBytes;
 
 pub fn main() {
@@ -37,7 +40,7 @@ pub fn main() {
                         println!("Transport protocol: {}", proto.long_name());
                     }
                     hex_dump(rest);
-                },
+                }
                 Err(err) => {
                     println!("Failed to convert packet buffer to Ipv4Packet type: {err}");
                 }
