@@ -14,9 +14,9 @@ underlying it) work.
 Instead of doing that, this project implements all of the protocol details in
 userspace. It simply passes fully-constructed [L3] packets to the kernel, which
 can then process them as if they came from a real network interface, like an
-Ethernet port.¹
+Ethernet port.[^l2note]
 
-¹ Real network interfaces provide [L2] packets to the kernel. Eventually, this
+[^l2note]: Real network interfaces provide [L2] packets to the kernel. Eventually, this
 project will hopefully handle the [link layer][L2] itself, but for now it
 operates at [layer 3][L3] and above.
 
